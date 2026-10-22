@@ -710,3 +710,61 @@ class TestPullWithSPN:
 
         expected_file = tmp_path / "sample_file.txt"
         assert expected_file.exists()
+
+
+class TestPullPathTraversal:
+    """
+    Regression tests for path traversal via malicious blob names in
+    pull_from_azure_blob_storage. A blob whose name contains `..` segments must
+    not be written outside the target download directory.
+    """
+
+    @pytest.mark.usefixtures("mock_azure_blob_storage")
+    def test_pull_rejects_blob_escaping_target_dir(
+        self, tmp_path, container_client_mock
+    ):
+        container = "test-container"
+        folder = "test-folder"
+        credentials = {"connection_string": "fake_connection_string"}
+
+        os.chdir(tmp_path)
+
+        # Malicious blob name that attempts to escape the download directory.
+        evil_blob = MagicMock()
+        evil_blob.name = f"{folder}/../../../evil.txt"
+        evil_blob.metadata = None
+
+        mock_context_client = (
+            container_client_mock.from_connection_string.return_value.__enter__.return_value  # noqa
+        )
+        mock_context_client.list_blobs.return_value = [evil_blob]
+
+        with pytest.raises(ValueError, match="would resolve outside"):
+            pull_from_azure_blob_storage(container, folder, credentials)
+
+        # The blob must never have been downloaded.
+        mock_context_client.download_blob.assert_not_called()
+
+    @pytest.mark.usefixtures("mock_azure_blob_storage")
+    def test_pull_allows_legitimate_nested_blob(
+        self, tmp_path, container_client_mock
+    ):
+        container = "test-container"
+        folder = "test-folder"
+        credentials = {"connection_string": "fake_connection_string"}
+
+        os.chdir(tmp_path)
+
+        good_blob = MagicMock()
+        good_blob.name = f"{folder}/subdir/sample_file.txt"
+        good_blob.metadata = None
+
+        mock_context_client = (
+            container_client_mock.from_connection_string.return_value.__enter__.return_value  # noqa
+        )
+        mock_context_client.list_blobs.return_value = [good_blob]
+
+        pull_from_azure_blob_storage(container, folder, credentials)
+
+        # Legitimate nested blobs are still downloaded.
+        mock_context_client.download_blob.assert_called_once_with(good_blob)
