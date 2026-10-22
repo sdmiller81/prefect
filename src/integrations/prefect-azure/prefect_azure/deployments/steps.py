@@ -58,16 +58,24 @@ def _get_azure_credential(
     Returns:
         An Azure credential ready to use with Azure SDK client classes.
     """
+    # Extract only the known keys — never forward the whole dict to avoid
+    # inadvertently passing extra keys (e.g. `authority`) to the credential
+    # constructor, which could redirect token acquisition.
     tenant_id = credentials.get("tenant_id")
     client_id = credentials.get("client_id")
     client_secret = credentials.get("client_secret")
 
     if tenant_id is not None and client_id is not None and client_secret is not None:
-        return ClientSecretCredential(
-            tenant_id=tenant_id,
-            client_id=client_id,
-            client_secret=client_secret,
-        )
+        try:
+            return ClientSecretCredential(
+                tenant_id=tenant_id,
+                client_id=client_id,
+                client_secret=client_secret,
+            )
+        finally:
+            # Clear the local reference so the secret value is not held in
+            # this frame's locals longer than necessary.
+            del client_secret
     return DefaultAzureCredential()
 
 
@@ -212,6 +220,7 @@ def pull_from_azure_blob_storage(
             "Credentials must contain either connection_string or account_url"
         )
 
+    base_path = local_path.resolve()
     with container_client as client:
         for blob in client.list_blobs(name_starts_with=folder, include=["metadata"]):
             if blob.name.endswith("/"):
@@ -224,6 +233,14 @@ def pull_from_azure_blob_storage(
                 local_path
                 / relative_path_to_current_platform(blob.name).relative_to(folder)
             )
+            # Guard against path traversal via malicious blob names.
+            # PurePosixPath / relative_to() does not prevent .. segments from
+            # escaping the target directory; resolve() and is_relative_to() do.
+            if not Path(target).resolve().is_relative_to(base_path):
+                raise ValueError(
+                    f"Blob name {blob.name!r} would resolve outside the target "
+                    f"directory. Download aborted."
+                )
             Path.mkdir(Path(target.parent), parents=True, exist_ok=True)
             with open(target, "wb") as f:
                 client.download_blob(blob).readinto(f)

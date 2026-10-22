@@ -284,6 +284,7 @@ class AzureBlobStorageContainer(
                 self.container_name
             ) as container_client:
                 try:
+                    base_path = Path(to_folder).resolve()
                     async for blob in container_client.list_blobs(
                         name_starts_with=full_container_path
                     ):
@@ -291,6 +292,14 @@ class AzureBlobStorageContainer(
                         local_path = Path(to_folder) / Path(blob_path).relative_to(
                             full_container_path
                         )
+                        # Guard against path traversal via malicious blob names
+                        # (e.g. "folder/../../etc/passwd"). relative_to() does not
+                        # prevent .. segments from escaping the target directory.
+                        if not local_path.resolve().is_relative_to(base_path):
+                            raise ValueError(
+                                f"Blob name {blob_path!r} would resolve outside the "
+                                f"target directory. Download aborted."
+                            )
                         local_path.parent.mkdir(parents=True, exist_ok=True)
                         async with container_client.get_blob_client(
                             blob_path

@@ -2,7 +2,7 @@
 
 import base64
 import functools
-from typing import TYPE_CHECKING, Any, Dict, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, FrozenSet, Optional, Union
 
 from azure.identity import ClientSecretCredential, DefaultAzureCredential
 from azure.identity.aio import (
@@ -33,6 +33,34 @@ except ModuleNotFoundError:
     pass  # a descriptive error will be raised in get_workspace
 
 from prefect.blocks.core import Block
+
+# ---------------------------------------------------------------------------
+# Allowlists for credential_kwargs on AzureContainerInstanceCredentials.
+#
+# These are the only kwargs that callers may pass through to the underlying
+# Azure credential constructors.  Keys that can redirect authentication
+# (e.g. `authority`, `managed_identity_client_id`) are intentionally excluded
+# so that block-write access cannot be used to hijack the worker's identity or
+# redirect token acquisition to an attacker-controlled endpoint.
+#
+# If a legitimate use-case requires one of the excluded keys, promote it to a
+# dedicated typed field with explicit documentation.
+# ---------------------------------------------------------------------------
+_SAFE_DEFAULT_CREDENTIAL_KWARGS: FrozenSet[str] = frozenset(
+    {
+        "exclude_workload_identity_credential",
+        "exclude_managed_identity_credential",
+        "exclude_shared_token_cache_credential",
+        "exclude_visual_studio_code_credential",
+        "exclude_cli_credential",
+        "exclude_environment_credential",
+        "exclude_powershell_credential",
+        "exclude_interactive_browser_credential",
+        "logging_enable",
+    }
+)
+
+_SAFE_CLIENT_SECRET_KWARGS: FrozenSet[str] = frozenset({"logging_enable"})
 
 HELP_URLS = {
     "blob_storage": "https://docs.microsoft.com/en-us/azure/storage/blobs/storage-quickstart-blobs-python#copy-your-credentials-from-the-azure-portal",  # noqa
@@ -648,6 +676,10 @@ class AzureContainerInstanceCredentials(Block):
         """
         Validates that if any of `client_id`, `tenant_id`, or `client_secret` are
         provided, all must be provided.
+
+        Also enforces an allowlist on `credential_kwargs` to prevent injection of
+        keys that could redirect authentication (e.g. `authority`,
+        `managed_identity_client_id`) to an attacker-controlled endpoint or identity.
         """
         auth_args = ("client_id", "tenant_id", "client_secret")
         has_any = any(values.get(key) is not None for key in auth_args)
@@ -657,6 +689,22 @@ class AzureContainerInstanceCredentials(Block):
                 "If any of `client_id`, `tenant_id`, or `client_secret` are provided, "
                 "all must be provided."
             )
+
+        extra_kwargs: Dict[str, Any] = values.get("credential_kwargs") or {}
+        allowed = (
+            _SAFE_CLIENT_SECRET_KWARGS if has_all else _SAFE_DEFAULT_CREDENTIAL_KWARGS
+        )
+        disallowed = set(extra_kwargs.keys()) - allowed
+        if disallowed:
+            raise ValueError(
+                f"The following credential_kwargs keys are not permitted: "
+                f"{sorted(disallowed)}. "
+                f"Allowed keys are: {sorted(allowed)}. "
+                f"To use `managed_identity_client_id` or `authority`, promote them "
+                f"to dedicated block fields rather than passing them through "
+                f"credential_kwargs."
+            )
+
         return values
 
     def get_container_client(self, subscription_id: str):

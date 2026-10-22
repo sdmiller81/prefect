@@ -20,8 +20,10 @@ ACI_DEFAULT_MEMORY = 1.0
 ACI_DEFAULT_GPU = 0.0
 DEFAULT_CONTAINER_ENTRYPOINT = "/opt/prefect/entrypoint.sh"
 # environment variables that ACI should treat as secure variables so they
-# won't appear in logs
-ENV_SECRETS = ["PREFECT_API_KEY"]
+# won't appear in logs. Keep in sync with workers/container_instance.py.
+# NOTE: Do not add new secrets here — the canonical definition lives in the
+# worker module. This list must be a superset of that definition.
+ENV_SECRETS = ["PREFECT_API_KEY", "PREFECT_API_AUTH_STRING"]
 
 # The maximum time to wait for container group deletion before giving up and
 # moving on. Deletion is usually quick, so exceeding this timeout means something
